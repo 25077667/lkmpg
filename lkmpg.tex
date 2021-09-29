@@ -410,34 +410,38 @@ It takes two parameters: a variable name and a free form string describing that 
 \samplec{examples/hello-5.c}
 
 I would recommend playing around with this code:
-\begin{code}
-$ sudo insmod hello-5.ko mystring="bebop" myintArray=-1
+\begin{verbatim}
+$ sudo insmod hello-5.ko mystring="bebop" myintarray=-1
+$ sudo dmesg -t | tail -7
 myshort is a short integer: 1
 myint is an integer: 420
 mylong is a long integer: 9999
 mystring is a string: bebop
-myintArray[0] = -1
-myintArray[1] = 420
-got 1 arguments for myintArray.
+myintarray[0] = -1
+myintarray[1] = 420
+got 1 arguments for myintarray.
 
 $ sudo rmmod hello-5
+$ sudo dmesg -t | tail -1
 Goodbye, world 5
 
-$ sudo insmod hello-5.ko mystring="supercalifragilisticexpialidocious" myintArray=-1,-1
+$ sudo insmod hello-5.ko mystring="supercalifragilisticexpialidocious" myintarray=-1,-1
+$ sudo dmesg -t | tail -7
 myshort is a short integer: 1
 myint is an integer: 420
 mylong is a long integer: 9999
 mystring is a string: supercalifragilisticexpialidocious
-myintArray[0] = -1
-myintArray[1] = -1
-got 2 arguments for myintArray.
+myintarray[0] = -1
+myintarray[1] = -1
+got 2 arguments for myintarray.
 
 $ sudo rmmod hello-5
+$ sudo dmesg -t | tail -1
 Goodbye, world 5
 
 $ sudo insmod hello-5.ko mylong=hello
-hello-5.o: invalid argument syntax for mylong: 'h'
-\end{code}
+insmod: ERROR: could not insert module hello-5.ko: Invalid parameters
+\end{verbatim}
 
 \subsection{Modules Spanning Multiple Files}
 \label{modfiles}
@@ -835,6 +839,9 @@ The meaning is clear, and you should be aware that any member of the structure w
 
 An instance of \cpp|struct file_operations| containing pointers to functions that are used to implement \cpp|read|, \cpp|write|, \cpp|open|, \ldots{} system calls is commonly named \cpp|fops|.
 
+Since Linux v3.14, the read, write and seek operations are guaranteed for thread-safe by using the \cpp|f_pos| specific lock, which makes the file position update to become the mutual exclusion.
+So, we can safely implement those operations without unnecessary locking.
+
 Since Linux v5.6, the \cpp|proc_ops| structure was introduced to replace the use of the \cpp|file_operations| structure when registering proc handlers.
 
 \subsection{The file structure}
@@ -869,7 +876,7 @@ You do this by using the \cpp|register_chrdev| function, defined by \src{include
 int register_chrdev(unsigned int major, const char *name, struct file_operations *fops);
 \end{code}
 
-where unsigned int major is the major number you want to request, \cpp|const char *name| is the name of the device as it will appear in \verb|/proc/devices| and \cpp|struct file_operations *fops| is a pointer to the \cpp|file_operations| table for your driver.
+Where unsigned int major is the major number you want to request, \cpp|const char *name| is the name of the device as it will appear in \verb|/proc/devices| and \cpp|struct file_operations *fops| is a pointer to the \cpp|file_operations| table for your driver.
 A negative return value means the registration failed. Note that we didn't pass the minor number to \cpp|register_chrdev|.
 That is because the kernel doesn't care about the minor number; only our driver uses it.
 
@@ -927,8 +934,8 @@ We simply read in the data and print a message acknowledging that we received it
 In the multiple-threaded environment, without any protection, concurrent access to the same memory may lead to the race condition, and will not preserve the performance.
 In the kernel module, this problem may happen due to multiple instances accessing the shared resources.
 Therefore, a solution is to enforce the exclusive access.
-We use atomic Compare-And-Swap (CAS), the single atomic operation, to determine whether the file is currently open by someone.
-CAS compares the contents of a memory loaction with the expected value and, only if they are the same, modifies the contents of that memory location to the desired value.
+We use atomic Compare-And-Swap (CAS) to maintain the states, \cpp|CDEV_NOT_USED| and \cpp|CDEV_EXCLUSIVE_OPEN|, to determine whether the file is currently opened by someone or not.
+CAS compares the contents of a memory location with the expected value and, only if they are the same, modifies the contents of that memory location to the desired value.
 See more concurrency details in the \ref{sec:synchronization} section.
 
 \samplec{examples/chardev.c}
@@ -1583,7 +1590,7 @@ The tasklet callback runs in atomic context, inside a software interrupt, meanin
 Also, the kernel only allows one instance of any given tasklet to be running at any given time; multiple different tasklet callbacks can run in parallel.
 
 In recent kernels, tasklets can be replaced by workqueues, timers, or threaded interrupts.\footnote{The goal of threaded interrupts is to push more of the work to separate threads, so that the minimum needed for acknowledging an interrupt is reduced, and therefore the time spent handling the interrupt (where it can't handle any other interrupts at the same time) is reduced.
-See https://lwn.net/Articles/302043/}
+See \url{https://lwn.net/Articles/302043/}.}
 While the removal of tasklets remains a longer-term goal, the current kernel contains more than a hundred uses of tasklets.
 Now developers are proceeding with the API changes and the macro \cpp|DECLARE_TASKLET_OLD| exists for compatibility.
 For further information, see \url{https://lwn.net/Articles/830964/}.
@@ -1677,12 +1684,11 @@ Here is a demonstration of how to calculate a sha256 hash within a kernel module
 
 \samplec{examples/cryptosha256.c}
 
-Make and install the module:
+Install the module:
 
 \begin{codebash}
-make
 sudo insmod cryptosha256.ko
-dmesg
+sudo dmesg
 \end{codebash}
 
 And you should see that the hash was calculated for the test string.
@@ -1746,13 +1752,8 @@ You might need to do this for a short time and that is OK, but if you do not ena
 For people seriously interested in kernel programming, I recommend \href{https://kernelnewbies.org}{kernelnewbies.org} and the \src{Documentation} subdirectory within the kernel source code which is not always easy to understand but can be a starting point for further investigation.
 Also, as Linus Torvalds said, the best way to learn the kernel is to read the source code yourself.
 
-If you are interested in more examples of short kernel modules then searching on sites such as Github and Gitlab is a good way to start, although there is a lot of duplication of older LKMPG examples which may not compile with newer kernel versions.
-You will also be able to find examples of the use of kernel modules to attack or compromise systems or exfiltrate data and those can be useful for thinking about how to defend systems and learning about existing security mechanisms within the kernel.
-
-I hope I have helped you in your quest to become a better programmer, or at least to have fun through technology.
-And, if you do write useful kernel modules, I hope you publish them under the GPL, so I can use them too.
-
 If you would like to contribute to this guide or notice anything glaringly wrong, please create an issue at \url{https://github.com/sysprog21/lkmpg}.
+Your pull requests will be appreciated.
 
 Happy hacking!
 \end{document}
